@@ -2,7 +2,7 @@ require('../lib/packer');
 
 describe("Array.pack", function() {
   it("returns a String", function() {
-    assert(["abc", "def"].pack("A*") instanceof String);
+    assert(typeof ["abc", "def"].pack("A*") == "string");
   });
 
   it("raises an ArgumentError with ('%')", function() {
@@ -21,6 +21,10 @@ describe("Array.pack", function() {
         [].pack(arr[i]);
       });
     }
+  });
+
+  it("sequentially processes each pack format, which consumes element in the array, and finally concatenates their result", function() {
+    assertEqual('a\\001\\000\\002\\000A ', ["abc", 1, 2, '01000001', 0x20].pack('Av2B8c').escapeChars());
   });
 });
 
