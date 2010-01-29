@@ -207,6 +207,15 @@ process.mixin(require('sys'));
     }
   };
 
+  var assertNotRaise = function(func) {
+    try {
+      func();
+      specPass();
+    } catch(e) { 
+      specFail("Expected: Nothing to be raised\n\n" + e.name + " was raised instead with " + e.message);
+    }
+  };
+
   var beforeEach = function(func) {
     specBeforeEach = func;
   };
