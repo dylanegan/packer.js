@@ -2,8 +2,9 @@ require 'socket'
 
 class ClientQuitError < RuntimeError; end
 
-port = 5678
+port = 7000
 server = TCPServer.open('127.0.0.1', port)
+directive = ARGV.first
 
 loop do
   socket = server.accept
@@ -18,7 +19,7 @@ loop do
     begin
       while line = s.gets
         puts "#{Time.now} -> #{line.inspect}"
-        puts "#{Time.now} -> #{line.unpack('c*').inspect}"
+        puts "#{Time.now} -> #{line.unpack(directive).inspect}"
       end
     ensure
       s.close

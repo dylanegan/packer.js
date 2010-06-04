@@ -1,18 +1,12 @@
 var sys = require('sys');
-var tcp = require('tcp');
+var net = require('net');
 require('../../lib/packer');
-var server = tcp.createServer(function (socket) {
-  socket.addListener("connect", function () {
-    socket.send("hello\r\n");
+var server = net.createServer(function (stream) {
+  stream.addListener("data", function (data) {
+    sys.debug(sys.inspect(data));
   });
-  socket.addListener("receive", function (data) {
-    sys.puts(socket.remoteAddress);
-    sys.puts(data.escapeChars());
-    //socket.send(data);
-  });
-  socket.addListener("eof", function () {
-    socket.send("goodbye\r\n");
-    socket.close();
+  stream.addListener("end", function () {
+    stream.end();
   });
 });
-server.listen(5678, "localhost");
+server.listen(7000, "localhost");

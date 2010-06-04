@@ -53,11 +53,11 @@
  * Copyright 2009, Jon Crosby, MIT Licensed
  *
  */
-process.mixin(require('sys'));
+var sys = require('sys');
 
 (function() {
   var path = require('path');
-  var posix = require('posix');
+  var fs = require('fs');
   var specCount    = 0;
   var specStack    = [];
   var specFailures = [];
@@ -103,17 +103,17 @@ process.mixin(require('sys'));
   };
 
   var specError = function(message) {
-    print(specVerbose ? "Error ("+message+") " : "E");
+    sys.print(specVerbose ? "Error ("+message+") " : "E");
     specFailures.push(specStack.join(" ") + "\n" + message);
   };
 
   var specFail = function(message) {
-    print(specVerbose ? "Fail " : "F");
+    sys.print(specVerbose ? "Fail " : "F");
     specFailures.push(specStack.join(" ") + "\n" + message);
   };
 
   var specPass = function() {
-    print(specVerbose ? "Pass " : ".");
+    sys.print(specVerbose ? "Pass " : ".");
   };
 
   var inspectObject = function(obj) {
@@ -244,26 +244,26 @@ process.mixin(require('sys'));
     if(specFailures.length) {
       var i;
       for(i = 1; i <= specFailures.length; i++) {
-        puts("" + i + ")");
-        puts(specFailures[i-1]);
-        puts("");
+        sys.puts("" + i + ")");
+        sys.puts(specFailures[i-1]);
+        sys.puts("");
       }
     }
-    puts(summary());
+    sys.puts(summary());
   };
 
   var specDirectory = path.dirname(__filename);
-  var files = posix.readdir(specDirectory).wait();
+  var files = fs.readdirSync(specDirectory);
   var i;
   for(i = 0; i < files.length; i++) {
     var file = files[i];
     if(file.match(/^spec/)) {
-      if (specVerbose) print(file+"\n");
-      var content = posix.cat(specDirectory + "/" + file, "utf8").wait();
+      if (specVerbose) sys.print(file+"\n");
+      var content = fs.readFileSync(specDirectory + "/" + file, "utf8");
       eval(content);
     }
   }
-  puts("\n");
+  sys.puts("\n");
   process.addListener("exit", function () {
     summarize();
   });
