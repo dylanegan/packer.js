@@ -13,7 +13,7 @@ String::gsub: (pattern, replacement) ->
     if match: source.match(pattern)
       result += source[0...match.index]
       result += @interpret(replacement(match))
-      source: source[match.index + match.first.length]
+      source: source.slice(match.index + match[0].length)
     else
       result += source
       source = ''

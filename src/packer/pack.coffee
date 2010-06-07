@@ -1,12 +1,13 @@
 sys: require('sys')
 Buffer: require('buffer').Buffer
+Base64: require('libraries/base64')
 
 ArgumentError: (message) ->
   @message: message
   @name: 'ArgumentError'
 
 Array::pack: (schema) ->
-  new Packer(@, schema).dispatch()
+  new Packer(@, schema).pack()
 
 class Packer
   constructor: (source, schema) ->
@@ -16,7 +17,7 @@ class Packer
     @buffer: new Buffer(256)
     @buffer.used: 0
 
-  dispatch: ->
+  pack: ->
     parsed: @parse(@schema)
     for i in [0...parsed.length]
       kind: parsed[i][0]
@@ -35,7 +36,7 @@ class Packer
         when 'i', 'I', 'l', 'L', 's', 'S', 'v', 'V'
           @integer(kind, t)
         when 'm'
-          @encode(kind, t, 'base64') # .join(''); # .replace(/(A{1,2})\n\Z/) { "#{'=' * $1.size}\n" } 
+          @base64(kind, t)
         when 'M'
           item: @fetch_item().toString()
           line_length: 72
@@ -46,9 +47,7 @@ class Packer
           result: while num -= 1
             items[num].gsub /[^ -<>-~\t\n]/, (match) ->
               "=%02X" % m[0] + "=\n"
-          result = result.join('')
-          @buffer.write(result, 'utf8', @buffer.used)
-          @buffer.used += Buffer.byteLength(result, 'utf8')
+          @write_utf8(result.join(''))
         when 'n'
           @net_short(t)
         when 'N'
@@ -71,23 +70,45 @@ class Packer
     schema: schema.replace(/#.*/, '')
     arr: []
     schema.scan /([^\s\d!_\*])([\d!_\*]*)/, (match) ->
-      arr.push([match[1], match[2]]);
+      arr.push([match[1], match[2]])
     return arr
+
+  write_utf8: (string, times) ->
+    times: or 1
+    for i in [0...times]
+      @buffer.write(string, 'utf8', @buffer.used)
+      @buffer.used += Buffer.byteLength(string, 'utf8')
+    return true
 
   ascii_string: (kind, t) ->
     item: @fetch_item()
-    if typeof item isnt "string" then throw new TypeError('not a string')
+
+    throw new TypeError('not a string') if typeof item isnt "string"
+
     item: item.toString()
     size: @parse_tail(t, kind, item.length + (if kind is 'Z' then 1 else 0))
     padsize: size - item.length
     filler: if kind is "A" then " " else "\0"
-    item: item.split('')[0...size].join('')
-    @buffer.write(item, 'utf8', @buffer.used)
-    @buffer.used += Buffer.byteLength(item, 'utf8')
-    if padsize > 0
-      while padsize -= 1
-        @buffer.write(filler, 'utf8', @buffer.used)
-        @buffer.used++
+    @write_utf8(item.split('')[0...size].join(''))
+    @write_utf8(filler, padsize) if padsize > 0
+    return true
+
+  ber_compress: (kind, t) ->
+    size: @parse_tail(t, kind)
+    for i in [0...size]
+      item: parseInt(@fetch_item())
+      throw new ArgumentError("can't compress negative numbers") if item < 0
+
+      chars: ''
+      chars << (item & 0x7f)
+      while (item: item >> 7) > 0
+        chars << ((item & 0x7f) | 0x80)
+      @write_utf8(chars.reverse())
+    return true
+
+  base64: (kind, t) ->
+    size: @parse_tail(t, kind)
+    @write_utf8(Base64.encode(@fetch_item().toString(), size))
     return true
 
   bit_string: (kind, t) ->
@@ -104,18 +125,35 @@ class Packer
       ii: i & 07
       byte: byte | bits[i] << (if lsb then ii else 07 - ii)
       if ii == 07
-        s: String.fromCharCode(byte)
-        @buffer.write(s, 'utf8', @buffer.used)
-        @buffer.used += Buffer.byteLength(s, 'utf8')
+        @write_utf8(String.fromCharCode(byte))
         byte: 0
     return true
-
+  
   character: (kind, t) ->
     times: @parse_tail(t, kind)
-    for i in [0...times]
-      s: String.fromCharCode(parseInt(@fetch_item()) & 0xff)
-      @buffer.write(s, 'utf8', @buffer.used)
-      @buffer.used += Buffer.byteLength(s, 'utf8')
+    @write_utf8(String.fromCharCode(parseInt(@fetch_item()) & 0xff)) for i in [0...times]
+    return true
+
+  decimal: (kind, t) ->
+    throw new ArgumentError('not yet implemented');
+
+    size: @parse_tail(t, kind)
+
+    want_double: switch(kind)
+      when 'd', 'D', 'E', 'G'
+        true
+      when 'e', 'f', 'F', 'g'
+        false
+
+    little_endian: switch(kind)
+      when 'g', 'G'
+        false
+      else
+        true
+
+    for i in [0...size]
+      item: parseInt(@fetch_item())
+
     return true
 
   fetch_item: ->
@@ -154,210 +192,154 @@ class Packer
         numbers + 0
   
     result: String.fromCharCode(number) for number in numbers
-    result: result.join('')
-    @buffer.write(result, 'utf8', @buffer.used)
-    @buffer.used += Buffer.byteLength(result, 'utf8')
+    @write_utf8(result.join(''))
     return true
 
-###
-  integer : function(kind, t) {
-    var size = @parse_tail(t, kind),
-        bytes, unsigned, little_endian, result;
-
-    if (t != undefined && (t.search('_') != -1 || t.search('!') != -1)) {
-      switch(kind) {
-        when 'l', 'L':
-          bytes = 2;
-          break;
-        when 'i', 'I':
-          bytes = 4;
-          break;
-        when 's', 'S':
-          bytes = 4;
-          break;
-      }
-    } else {
-      switch(kind) {
-        when 'i', 'I', 'l', 'L', 'V':
-          bytes = 4;
-          break;
-        when 's', 'S', 'v':
-          bytes = 2;
-          break;
-      }
-    }
-
-    if (kind.search(/I|S|L/) != -1) unsigned = true;
-    switch(kind) {
-      when 'v', 'V':
-        little_endian = true;
-        break;
-      default:
-        break;
-    }
-
-    if (@index + size > @source.length) throw new ArgumentError('too few array elements');
-
-    for (var i = 0; i < size; i++) {
-      var item = parseInt(@fetch_item());
-
-      if (Math.abs(item) >= Number.MAX_NUMBER) throw new RangeError("too big to convert into 'unsigned long'");
-
-      result = [];
-      if (little_endian != null && little_endian) {
-        if (item < 0) item += Math.pow(2, (8 * bytes));
-        for (var ii = 0; ii < bytes; ii++) {
-          result.push(String.fromCharCode(item >> (ii * 8) & 0xff));
-        }
-      } else {
-        for (var ii = 0; ii < bytes; ii++) {
-          result.push(String.fromCharCode(item & 0xff));
-          item >>= 8;
-        }
-        result = result.reverse();
-      }
-      result = result.join('');
-      @buffer.write(result, 'utf8', @buffer.used);
-      @buffer.used += Buffer.byteLength(result);
-    }
-  },
-
-  integer64 : function(kind, t) {
-    var size = @parse_tail(t, kind);
-    var bytes = 8;
-    var little_endian = true;
-
-    if (@index + size > @source.length) throw new ArgumentError('too few array elements');
-
-    for (var i = 0; i < size; i++) {
-      var item = parseInt(@fetch_item());
-      var max_wordsize = 64;
-
-      if (Math.abs(item) >= Math.pow(2, 64)) throw new RangeError("too big to convert into 'unsigned long");
-
-      throw new ArgumentError('not implemented');
-    }
-  },
-
-  parse_tail : function(t, kind, remaining) {
-    var remaining = remaining || @source.length - @index;
-    var tail = undefined;
-    if (t != undefined && (t.search('_') != -1 || t.search('!') != -1)) {
-      if (kind.search('sSiIlL') == -1) {
-        throw new ArgumentError(t + ' allowed only after types sSiIlL');
-      }
-      t = t.replace(/_|!/g, '');
-    }
-
-    switch (t) {
-      when undefined:
-        tail = 1;
-        break;
-      when '*':
-        tail = remaining;
-        break;
-      default:
-        var m = t.match(/(\d+)/);
-        tail = m ? parseInt(m[0]) : 1;
-        break;
-    }
-    return tail;
-  },
-
-  pointer : function(kind, t) {
-    var size = @parse_tail(t, kind, (kind == 'p' ? @source.length - @index : 1)),
-        item;
-    if (@index + size > @source.length && kind == 'p') throw new ArgumentError('too few array elements');
-
-    for (var i = 0; i < size; i++) {
-      item = @fetch_item();
-      if (item == undefined) {
-        for (var ii = 0; ii < 8; ii++) {
-          @buffer.write("\x00", 'utf8', @buffer.used);
-          @buffer.used += Buffer.byteLength('\x00', 'utf8');
-        }
-      } else {
-        item = item.toString();
-        throw new ArgumentError("not implemented");
-      }
-    }
-  },
-
-  net_long : function(t) {
-    var size = @parse_tail(t, 'N'),
-        item;
-
-    if (@index + size > @source.length) throw new ArgumentError('too few array elements');
-
-    for (var i = 0; i < size; i++) {
-      item = parseInt(@fetch_item());
-
-      if (Math.abs(item) >= Number.MAX_NUMBER) throw new RangeError('too big to be a network long');
-
-      @buffer[@buffer.used++] = (item & 0x00000000FF000000) >> 24;
-      @buffer[@buffer.used++] = (item & 0x0000000000FF0000) >> 16;
-      @buffer[@buffer.used++] = (item & 0x000000000000FF00) >> 8;
-      @buffer[@buffer.used++] = (item & 0x00000000000000FF) >> 0;
-    }
-  },
-
-  net_short : function(t) {
-    var size = @parse_tail(t, 'n'),
-        item;
-
-    if (@index + size > @source.length) throw new ArgumentError('too few array elements');
-
-    for (var i = 0; i < size; i++) {
-      item = parseInt(@fetch_item());
-
-      if (Math.abs(item) >= Number.MAX_NUMBER) throw new RangeError('too big to be a network short');
-
-      @buffer[@buffer.used++] = (item & 0xFF00) >> 8;
-      @buffer[@buffer.used++] = (item & 0x00FF) >> 0;
-    }
-  },
-
-  utf_string : function(kind, t) {
-    var size = @parse_tail(t, kind);
-    for (var i = 0; i < size; i++) {
-      var item = parseInt(@fetch_item());
-    }
-  }
-}
-
-  ber_compress: (kind, t) ->
+  integer: (kind, t) ->
     size: @parse_tail(t, kind)
-    chars: = ""
-    for (var i = 0; i < size; i++) {
-      chars = '';
-      item: parseInt(@fetch_item());
-    }
-  },
 
-  decimal: (kind, t) ->
+    if t? and (t.search('_') isnt -1 or t.search('!') isnt -1)
+      bytes: switch(kind)
+        when 'l', 'L'
+          2
+        when 'i', 'I'
+          4
+        when 's', 'S'
+          4
+    else
+      bytes: switch(kind)
+        when 'i', 'I', 'l', 'L', 'V'
+          4
+        when 's', 'S', 'v'
+          2
+
+    unsigned: true if (kind.search(/I|S|L/) isnt -1)
+    little_endian: true if kind is ('v' or 'V')
+
+    throw new ArgumentError('too few array elements') if (@index + size > @source.length)
+
+    for i in [0...size]
+      item: parseInt(@fetch_item())
+
+      throw new RangeError("too big to convert into 'unsigned long'") if (Math.abs(item) >= Number.MAX_NUMBER)
+
+      result = []
+      if little_endian? and little_endian
+        if (item < 0) then item += Math.pow(2, (8 * bytes))
+        for ii in [0...bytes]
+          result.push(String.fromCharCode(item >> (ii * 8) & 0xff))
+      else
+        for ii in [0...bytes]
+          result.push(String.fromCharCode(item & 0xff))
+          item: item >> 8
+        result: result.reverse()
+
+      @write_utf8(result.join(''))
+    return true
+
+  integer64: (kind, t) ->
     size: @parse_tail(t, kind)
-    want_double: undefined
-    little_endian: true
 
-    switch(kind)
-      when 'd', 'D', 'E', 'G'
-        want_double = true;
-      when 'e', 'f', 'F', 'g'
-        want_double = false;
+    throw new ArgumentError('too few array elements') if (@index + size) > @source.length
 
-    switch(kind)
-      # when 'e', 'E'
-      #   var little_endian = true
-      when 'g', 'G'
-        little_endian = false
+    for i in [0...size]
+      item: parseInt(@fetch_item())
+
+      throw new RangeError("too big to convert into 'unsigned long") if Math.abs(item) >= Math.pow(2, 64)
+
+      @buffer[@buffer.used++]: (item & 0xFF00000000000000) >> 56
+      @buffer[@buffer.used++]: (item & 0x00FF000000000000) >> 48
+      @buffer[@buffer.used++]: (item & 0x0000FF0000000000) >> 40
+      @buffer[@buffer.used++]: (item & 0x000000FF00000000) >> 32
+      @buffer[@buffer.used++]: (item & 0x00000000FF000000) >> 24
+      @buffer[@buffer.used++]: (item & 0x0000000000FF0000) >> 16
+      @buffer[@buffer.used++]: (item & 0x000000000000FF00) >> 8
+      @buffer[@buffer.used++]: (item & 0x00000000000000FF) >> 0 
+
+    return true
+
+  parse_tail: (t, kind, remaining) ->
+    remaining: remaining || @source.length - @index
+    tail: undefined
+    if t? and (t.search('_') isnt -1 or t.search('!') isnt -1)
+      throw new ArgumentError(t + ' allowed only after types sSiIlL') if kind.search('sSiIlL') is -1
+      t: t.replace(/_|!/g, '')
+
+    tail: switch (t)
+      when undefined
+        1
+      when '*'
+        remaining
+      else
+        m = t.match(/(\d+)/)
+        if m then parseInt(m[0]) else 1
+    return tail
+
+  pointer: (kind, t) -> 
+    size: @parse_tail(t, kind, (kind == 'p' ? @source.length - @index : 1))
+    throw new ArgumentError('too few array elements') if (@index + size > @source.length && kind == 'p')
 
     for i in [0...size]
       item: @fetch_item()
-
-
-encode : function(kind, t) {
-    var item = @fetch_item().toString(); 
-  },
-
+      if item?
+        for i in [0...8]
+          @write_utf8('\x00')
+    return true
  
-###
+  net_long: (t) ->
+    size: @parse_tail(t, 'N')
+
+    throw new ArgumentError('too few array elements') if (@index + size > @source.length)
+
+    for i in [0...size]
+      item: parseInt(@fetch_item())
+
+      throw new RangeError('too big to be a network long') if (Math.abs(item) >= Number.MAX_NUMBER)
+
+      @buffer[@buffer.used++]: (item & 0x00000000FF000000) >> 24
+      @buffer[@buffer.used++]: (item & 0x0000000000FF0000) >> 16
+      @buffer[@buffer.used++]: (item & 0x000000000000FF00) >> 8
+      @buffer[@buffer.used++]: (item & 0x00000000000000FF) >> 0
+    return true
+
+  net_short: (t) -> 
+    size: @parse_tail(t, 'n')
+
+    throw new ArgumentError('too few array elements') if (@index + size > @source.length)
+
+    for i in [0...size]
+      item: parseInt(@fetch_item())
+
+      throw new RangeError('too big to be a network short') if (Math.abs(item) >= Number.MAX_NUMBER)
+
+      @buffer[@buffer.used++]: (item & 0xFF00) >> 8
+      @buffer[@buffer.used++]: (item & 0x00FF) >> 0
+    return true
+
+  utf_string: (kind, t) -> 
+    size: @parse_tail(t, kind)
+    for i in [0...size]
+      item: parseInt(@fetch_item())
+      throw new RangeError('pack(U): value out of range') if item < 0
+      bytes: 0
+      match: null
+
+      f: [Math.pow(2, 7), Math.pow(2, 11), Math.pow(2, 16), Math.pow(2, 21), Math.pow(2, 26), Math.pow(2, 31)].filter (n) ->
+        if !match?
+          bytes += 1
+          match = n if item < n
+        return true
+      throw new RangeError('pack(U): value out of range') if !match?
+
+      if bytes is 1
+        @buffer[@buffer.used++]: item
+      else
+        i: bytes - 1
+        buf: []
+        while (i -= 1)
+          buf.unshift(String.fromCharCode((item | 0x80) & 0xBF))
+          item: item >> 6
+        buf.unshift(String.fromCharCode((item | ((0x3F00 >> bytes)) & 0xFC)))
+
+        @buffer.write_utf8(buf.join(''))
+    return true
